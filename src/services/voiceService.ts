@@ -1,5 +1,5 @@
 
-// Basic voice service using Web Speech API
+// Voice service using Web Speech API with continuous conversation support
 
 class VoiceService {
   private recognition: SpeechRecognition | null = null;
@@ -9,6 +9,9 @@ class VoiceService {
   private voices: SpeechSynthesisVoice[] = [];
   private selectedVoice: SpeechSynthesisVoice | null = null;
   private language = "en-US";
+  private continuousMode = false;
+  private silenceTimer: number | null = null;
+  private silenceThreshold = 2000; // 2 seconds of silence to trigger auto-stop in continuous mode
 
   constructor() {
     this.initialize();
@@ -18,8 +21,9 @@ class VoiceService {
     if (typeof window !== "undefined") {
       try {
         // Speech recognition setup
-        const SpeechRecognition =
-          window.SpeechRecognition || window.webkitSpeechRecognition;
+        const SpeechRecognition = 
+          (window as any).SpeechRecognition || 
+          (window as any).webkitSpeechRecognition;
         
         if (SpeechRecognition) {
           this.recognition = new SpeechRecognition();
@@ -74,6 +78,14 @@ class VoiceService {
     }
   }
 
+  // Enable or disable continuous conversation mode
+  public setContinuousMode(enable: boolean): void {
+    this.continuousMode = enable;
+    if (this.recognition) {
+      this.recognition.continuous = enable;
+    }
+  }
+
   public async speak(text: string): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.synthesis || !this.isInitialized) {
@@ -105,7 +117,8 @@ class VoiceService {
 
   public startListening(
     onResult: (transcript: string, isFinal: boolean) => void,
-    onError: (error: any) => void
+    onError: (error: any) => void,
+    silenceCallback?: () => void
   ): void {
     if (!this.recognition || !this.isInitialized) {
       console.warn("Speech recognition not supported");
@@ -120,11 +133,24 @@ class VoiceService {
     this.isRecording = true;
 
     this.recognition.onresult = (event) => {
+      // Reset silence timer on new speech
+      if (this.silenceTimer) {
+        clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+
       const transcript = Array.from(event.results)
         .map((result) => result[0].transcript)
         .join("");
       const isFinal = event.results[0].isFinal;
       onResult(transcript, isFinal);
+      
+      // Set silence timer if in continuous mode
+      if (this.continuousMode && isFinal && silenceCallback) {
+        this.silenceTimer = setTimeout(() => {
+          silenceCallback();
+        }, this.silenceThreshold) as unknown as number;
+      }
     };
 
     this.recognition.onerror = (event) => {
@@ -134,7 +160,17 @@ class VoiceService {
     };
 
     this.recognition.onend = () => {
-      this.isRecording = false;
+      // If in continuous mode and not explicitly stopped, restart
+      if (this.continuousMode && this.isRecording) {
+        try {
+          this.recognition?.start();
+        } catch (error) {
+          console.error("Error restarting speech recognition:", error);
+          this.isRecording = false;
+        }
+      } else {
+        this.isRecording = false;
+      }
     };
 
     try {
@@ -148,6 +184,11 @@ class VoiceService {
   }
 
   public stopListening(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    
     if (this.recognition && this.isRecording) {
       try {
         this.recognition.stop();
@@ -161,6 +202,10 @@ class VoiceService {
 
   public isSupported(): boolean {
     return this.isInitialized;
+  }
+  
+  public isCurrentlyListening(): boolean {
+    return this.isRecording;
   }
 }
 
