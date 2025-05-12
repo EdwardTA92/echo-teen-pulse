@@ -14,7 +14,7 @@ const WelcomeScreen: React.FC = () => {
       
       <div className="z-10 text-center">
         <div className="mb-8 animate-fade-in">
-          <h1 className="text-5xl font-bold mb-2 text-gradient">Connect</h1>
+          <h1 className="text-5xl font-bold mb-2 text-gradient">Sparks Fly</h1>
           <p className="text-xl text-muted-foreground">
             Meet new friends in a whole new way
           </p>

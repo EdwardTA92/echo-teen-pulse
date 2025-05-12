@@ -64,6 +64,7 @@ interface SpeechRecognitionResult {
   readonly isFinal: boolean;
   readonly length: number;
   [index: number]: SpeechRecognitionAlternative;
+  item(index: number): SpeechRecognitionAlternative;
 }
 
 interface SpeechRecognitionResultList {
@@ -90,3 +91,17 @@ declare class SpeechGrammarList {
   addFromURI(src: string, weight?: number): void;
   addFromString(string: string, weight?: number): void;
 }
+
+// Add global WebSpeech API declaration
+declare global {
+  interface Window {
+    SpeechRecognition: typeof SpeechRecognition;
+    webkitSpeechRecognition: typeof SpeechRecognition;
+    SpeechGrammarList: typeof SpeechGrammarList;
+    webkitSpeechGrammarList: typeof SpeechGrammarList;
+    SpeechSynthesis: typeof SpeechSynthesis;
+    SpeechSynthesisUtterance: typeof SpeechSynthesisUtterance;
+  }
+}
+
+export {};

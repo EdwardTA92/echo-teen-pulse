@@ -1,5 +1,7 @@
 
 import { AIResponse, OnboardingQuestion, PersonalityTraits } from "../types";
+import aiConnectorService from "./aiConnectorService";
+import configService from "./configService";
 
 // AI service for onboarding flow with real-time conversation capabilities
 class AIService {
@@ -15,7 +17,7 @@ class AIService {
   private onboardingQuestions: OnboardingQuestion[] = [
     {
       id: "q1",
-      text: "Hey there! I'm excited to help you set up your profile. What's your name?",
+      text: "Hey there! Welcome to Sparks Fly! I'm excited to help you set up your profile. What's your name?",
       audioPrompt: "intro_name.mp3",
       responseType: "voice",
       minResponseLength: 2,
@@ -73,6 +75,12 @@ class AIService {
   private conversationHistory: { question: string; response: string }[] = [];
   private timeoutId: number | null = null;
   private mandatoryFieldsCollected: Set<string> = new Set();
+  private conversationStartTime: number = 0;
+  private timeLimit: number = 300; // Default 5 minutes (300 seconds)
+
+  constructor() {
+    this.timeLimit = configService.getTimeLimit();
+  }
 
   // Get all onboarding questions
   public getOnboardingQuestions(): OnboardingQuestion[] {
@@ -95,6 +103,32 @@ class AIService {
     }
   }
 
+  // Start the conversation timer
+  public startConversationTimer(): void {
+    this.conversationStartTime = Date.now();
+    this.timeLimit = configService.getTimeLimit();
+  }
+
+  // Get remaining conversation time in seconds
+  public getRemainingTime(): number {
+    if (this.conversationStartTime === 0) return this.timeLimit;
+    
+    const elapsedMs = Date.now() - this.conversationStartTime;
+    const remainingSeconds = Math.max(0, this.timeLimit - Math.floor(elapsedMs / 1000));
+    return remainingSeconds;
+  }
+
+  // Check if conversation time limit is reached
+  public isTimeExpired(): boolean {
+    return this.getRemainingTime() <= 0;
+  }
+
+  // Get time progress percentage (0-100)
+  public getTimeProgress(): number {
+    const remaining = this.getRemainingTime();
+    return Math.min(100, Math.max(0, 100 - (remaining / this.timeLimit * 100)));
+  }
+
   // Mark a mandatory field as collected
   public markFieldCollected(fieldId: string): void {
     this.mandatoryFieldsCollected.add(fieldId);
@@ -112,7 +146,7 @@ class AIService {
     return mandatoryFields.filter(field => !this.mandatoryFieldsCollected.has(field));
   }
 
-  // Simulates AI processing of user responses
+  // Simulates AI processing of user responses with real API integration
   public async processResponse(question: string, response: string): Promise<AIResponse> {
     // Store in conversation history
     this.conversationHistory.push({ question, response });
@@ -124,11 +158,54 @@ class AIService {
     const currentIndex = this.onboardingQuestions.findIndex(q => q.text === question);
     const nextQuestion = this.onboardingQuestions[currentIndex + 1];
     
-    // Generate a friendly response based on the context
-    const aiResponse = this.generateResponse(response, currentIndex);
+    // Check for mandatory fields
+    const extractedInfo = this.extractProfileInfo(response);
+    if (extractedInfo.questionId) {
+      this.markFieldCollected(extractedInfo.questionId);
+    }
+    
+    // Process with real AI if configured
+    let aiResponseText = "";
+    
+    try {
+      const contextInfo = {
+        questionId: this.onboardingQuestions[currentIndex]?.id,
+        previousResponses: this.conversationHistory.slice(0, -1),
+        missingFields: this.getMissingMandatoryFields(),
+        timeRemaining: this.getRemainingTime()
+      };
+      
+      // Use the AI connector service if available
+      if (configService.isConfigured()) {
+        const prompt = `
+          The user is responding to this question: "${question}"
+          Their response is: "${response}"
+          
+          Based on this, provide a friendly, conversational response that acknowledges what they said and guides them toward providing information for their profile.
+          
+          ${this.getMissingMandatoryFields().length > 0 ? 
+            `I still need to collect: ${this.getMissingMandatoryFields().join(', ')}` : 
+            "I have all required information but can explore their interests and personality more."}
+          
+          ${this.getRemainingTime() < 60 ? 
+            "Time is running short, so be concise and focus on collecting essential information." : 
+            ""}
+          
+          Remember to keep the tone friendly, age-appropriate, and engaging for teen users.
+        `;
+        
+        aiResponseText = await aiConnectorService.processText(prompt, JSON.stringify(contextInfo));
+      } else {
+        // Fallback to local response generation if no API configured
+        aiResponseText = this.generateResponse(response, currentIndex);
+      }
+    } catch (error) {
+      console.error("Error processing with AI:", error);
+      aiResponseText = this.generateResponse(response, currentIndex);
+    }
     
     return {
-      text: aiResponse,
+      text: aiResponseText,
       nextQuestion: nextQuestion,
       personalityInsight: this.personality,
       suggestedInterests: this.suggestInterests(response),
@@ -148,21 +225,64 @@ class AIService {
       this.markFieldCollected(extractedInfo.questionId);
     }
     
-    // Generate a response that tries to guide the conversation toward missing information
-    const aiResponse = this.generateConversationalResponse(userInput, extractedInfo);
+    let aiResponseText = "";
+    
+    try {
+      // Check time remaining and missing fields
+      const timeRemaining = this.getRemainingTime();
+      const missingFields = this.getMissingMandatoryFields();
+      
+      const contextInfo = {
+        conversationHistory: this.conversationHistory,
+        extractedInfo: extractedInfo,
+        missingFields: missingFields,
+        timeRemaining: timeRemaining,
+        timeProgress: this.getTimeProgress()
+      };
+      
+      // Use the AI connector if available
+      if (configService.isConfigured()) {
+        const prompt = `
+          The user said: "${userInput}"
+          
+          ${extractedInfo.questionId ? 
+            `I extracted this information: ${JSON.stringify(extractedInfo)}` : 
+            "I couldn't extract any specific profile information from this."}
+          
+          ${missingFields.length > 0 ? 
+            `I still need to collect: ${missingFields.join(', ')}` : 
+            "I have all required information but can explore their interests and personality more."}
+          
+          ${timeRemaining < 60 ? 
+            "Time is running short, so be concise and focus on collecting essential information." : 
+            ""}
+          
+          Respond in a friendly, conversational way. If appropriate, guide the conversation toward collecting missing information.
+          Remember this is for teenagers 17 and under, so keep it appropriate but still engaging.
+        `;
+        
+        aiResponseText = await aiConnectorService.processText(prompt, JSON.stringify(contextInfo));
+      } else {
+        // Fallback to local response generation if no API configured
+        aiResponseText = this.generateConversationalResponse(userInput, extractedInfo);
+      }
+    } catch (error) {
+      console.error("Error processing conversation with AI:", error);
+      aiResponseText = this.generateConversationalResponse(userInput, extractedInfo);
+    }
     
     // Check if we need to explicitly ask for a specific piece of information
     const missingFields = this.getMissingMandatoryFields();
     let nextQuestion: OnboardingQuestion | undefined;
     
-    if (missingFields.length > 0 && Math.random() > 0.5) {
-      // 50% chance to directly ask for missing information
+    if (missingFields.length > 0 && (Math.random() > 0.5 || this.getRemainingTime() < 60)) {
+      // Higher chance to directly ask for missing info when time is running out
       const missingField = missingFields[0];
       nextQuestion = this.onboardingQuestions.find(q => q.id === missingField);
     }
     
     return {
-      text: aiResponse,
+      text: aiResponseText,
       nextQuestion: nextQuestion,
       personalityInsight: this.personality,
       suggestedInterests: this.suggestInterests(userInput),

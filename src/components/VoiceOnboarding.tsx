@@ -7,6 +7,7 @@ import { Mic, MicOff, Volume, VolumeX } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 import aiService from "@/services/aiService";
 import voiceService from "@/services/voiceService";
+import configService from "@/services/configService";
 import { AIResponse, OnboardingQuestion } from "@/types";
 import { useToast } from "@/hooks/use-toast";
 
@@ -25,17 +26,70 @@ const VoiceOnboarding: React.FC = () => {
   const [typedResponse, setTypedResponse] = useState("");
   const [recordingTime, setRecordingTime] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [conversationTimeProgress, setConversationTimeProgress] = useState(0);
   const [collectingInfo, setCollectingInfo] = useState({
     name: "",
     age: 0,
     location: "",
     interests: [] as string[],
   });
+  const [apiConfigured, setApiConfigured] = useState(false);
 
   const timerRef = useRef<number | null>(null);
+  const conversationTimerRef = useRef<number | null>(null);
   const aiSpeakingRef = useRef(false);
   const maxSteps = 7; // Total number of onboarding steps
 
+  // Check if API is configured
+  useEffect(() => {
+    const isConfigured = configService.isConfigured();
+    setApiConfigured(isConfigured);
+    
+    if (!isConfigured) {
+      toast({
+        title: "API not configured",
+        description: "For full AI capabilities, an administrator should configure the API key.",
+        variant: "warning",
+        duration: 6000,
+      });
+    }
+  }, []);
+
+  // Start conversation timer
+  useEffect(() => {
+    // Start the AI service conversation timer
+    aiService.startConversationTimer();
+    
+    // Update the UI with time progress
+    const updateTimeProgress = () => {
+      setConversationTimeProgress(aiService.getTimeProgress());
+      
+      // Check if time expired
+      if (aiService.isTimeExpired() && !aiService.areMandatoryFieldsCollected()) {
+        toast({
+          title: "Time's up!",
+          description: "Let's finish setting up your profile with what we know so far.",
+          variant: "warning",
+        });
+        
+        // Ensure we have at least some information before completing
+        setTimeout(() => {
+          handleCompleteOnboarding();
+        }, 2000);
+      }
+    };
+    
+    // Update progress immediately and then every second
+    updateTimeProgress();
+    conversationTimerRef.current = setInterval(updateTimeProgress, 1000) as unknown as number;
+    
+    return () => {
+      if (conversationTimerRef.current) {
+        clearInterval(conversationTimerRef.current);
+      }
+    };
+  }, []);
+  
   // Load the initial question when component mounts
   useEffect(() => {
     const initialQuestion = aiService.getInitialQuestion();
@@ -107,8 +161,16 @@ const VoiceOnboarding: React.FC = () => {
             speakQuestion(aiResponse.nextQuestion!.text);
           }, 1000);
         } else {
-          // No more questions, complete onboarding
-          handleCompleteOnboarding();
+          // Check if we've collected all mandatory information or time is up
+          if (aiService.areMandatoryFieldsCollected() || aiService.getRemainingTime() < 30) {
+            // No more questions or time is almost up, complete onboarding
+            handleCompleteOnboarding();
+          } else {
+            // Continue with open conversation
+            setTimeout(() => {
+              startListening();
+            }, 500);
+          }
         }
       } catch (error) {
         console.error("Error speaking response:", error);
@@ -142,11 +204,13 @@ const VoiceOnboarding: React.FC = () => {
       });
     }, 1000) as unknown as number;
     
-    // Start voice recognition
+    // Start voice recognition with continuous mode
+    voiceService.setContinuousMode(true);
     voiceService.startListening(
       (text, isFinal) => {
         setTranscript(text);
-        if (isFinal) {
+        if (isFinal && text.trim().length > 5) {
+          // Process longer responses immediately
           stopListening();
         }
       },
@@ -158,6 +222,12 @@ const VoiceOnboarding: React.FC = () => {
           variant: "destructive",
         });
         stopListening();
+      },
+      // Silence callback - process after silence
+      () => {
+        if (transcript.trim().length > 0) {
+          stopListening();
+        }
       }
     );
   };
@@ -172,14 +242,14 @@ const VoiceOnboarding: React.FC = () => {
       timerRef.current = null;
     }
     
-    if (transcript) {
+    if (transcript && transcript.trim()) {
       processUserResponse(transcript);
     }
   };
 
   // Process the user's response
   const processUserResponse = async (response: string) => {
-    if (!currentQuestion || !response.trim()) return;
+    if (!response.trim()) return;
     
     setIsProcessing(true);
     
@@ -187,13 +257,24 @@ const VoiceOnboarding: React.FC = () => {
       // Update our collected info based on the question and response
       updateCollectedInfo(currentQuestion, response);
       
-      // Process with AI
-      const aiResp = await aiService.processResponse(currentQuestion.text, response);
+      let aiResp: AIResponse;
+      
+      // If responding to a specific question
+      if (currentQuestion) {
+        aiResp = await aiService.processResponse(currentQuestion.text, response);
+      } else {
+        // Open-ended conversation
+        aiResp = await aiService.processConversation(response);
+      }
+      
       setAiResponse(aiResp);
       setShowTypingResponse(true);
+      setTypedResponse("");
       
-      // Move to next step
-      setOnboardingStep(onboardingStep + 1);
+      // Move to next step if we have a structured question
+      if (currentQuestion) {
+        setOnboardingStep(onboardingStep + 1);
+      }
       
     } catch (error) {
       console.error("Error processing response:", error);
@@ -208,8 +289,24 @@ const VoiceOnboarding: React.FC = () => {
   };
 
   // Update our collected information based on the response
-  const updateCollectedInfo = (question: OnboardingQuestion, response: string) => {
-    // Very basic info extraction - in a real app, this would be more sophisticated
+  const updateCollectedInfo = (question: OnboardingQuestion | null, response: string) => {
+    // If no specific question, try to extract from open conversation
+    if (!question) {
+      const info = aiService.extractProfileInfo(response);
+      
+      if (info.name) {
+        setCollectingInfo(prev => ({ ...prev, name: info.name }));
+      }
+      if (info.age) {
+        setCollectingInfo(prev => ({ ...prev, age: info.age }));
+      }
+      if (info.location) {
+        setCollectingInfo(prev => ({ ...prev, location: info.location }));
+      }
+      return;
+    }
+    
+    // Very basic info extraction for specific questions
     const questionId = question.id;
     
     if (questionId === "q1") {
@@ -247,6 +344,14 @@ const VoiceOnboarding: React.FC = () => {
 
   // Complete the onboarding process
   const handleCompleteOnboarding = () => {
+    // Stop all timers
+    if (conversationTimerRef.current) {
+      clearInterval(conversationTimerRef.current);
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    
     // Create a user from collected information
     const user = {
       id: `user-${Date.now()}`,
@@ -277,27 +382,41 @@ const VoiceOnboarding: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-br from-background to-secondary/30">
-      {/* Progress indicator */}
-      <div className="w-full max-w-3xl mb-6 px-4">
+      {/* Progress indicators */}
+      <div className="w-full max-w-3xl mb-2 px-4">
         <div className="flex justify-between items-center mb-2">
-          <span className="text-sm font-medium">Creating your profile</span>
-          <span className="text-sm font-medium">{onboardingStep}/{maxSteps}</span>
+          <span className="text-sm font-medium">Profile creation: {onboardingStep}/{maxSteps}</span>
+          <span className="text-sm font-medium">{Math.floor((configService.getTimeLimit() - aiService.getRemainingTime()) / 60)}:{(aiService.getRemainingTime() % 60).toString().padStart(2, '0')}</span>
         </div>
-        <Progress value={progress} className="h-2" />
+        <Progress value={progress} className="h-2 mb-2" />
+        <Progress value={conversationTimeProgress} className="h-1 bg-red-100" indicatorClassName="bg-red-500" />
       </div>
 
       <Card className="w-full max-w-3xl p-6 shadow-lg animate-fade-in">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">AI Assistant</h2>
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={toggleVoice} 
-            title={voiceEnabled ? "Mute voice" : "Enable voice"}
-            className="rounded-full w-10 h-10 p-0"
-          >
-            {voiceEnabled ? <Volume size={20} /> : <VolumeX size={20} />}
-          </Button>
+          <h2 className="text-2xl font-bold">Sparks Fly</h2>
+          <div className="flex gap-2">
+            {!apiConfigured && (
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => window.location.href = '/admin'}
+                title="Configure AI API"
+                className="text-xs"
+              >
+                Configure AI
+              </Button>
+            )}
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={toggleVoice} 
+              title={voiceEnabled ? "Mute voice" : "Enable voice"}
+              className="rounded-full w-10 h-10 p-0"
+            >
+              {voiceEnabled ? <Volume size={20} /> : <VolumeX size={20} />}
+            </Button>
+          </div>
         </div>
         
         {/* AI Question */}
@@ -319,7 +438,7 @@ const VoiceOnboarding: React.FC = () => {
         {/* User Input Area */}
         <div className="mt-6">
           {/* Voice input */}
-          {currentQuestion?.responseType === "voice" && (
+          {(currentQuestion?.responseType === "voice" || !currentQuestion) && (
             <div className="flex flex-col items-center">
               <Button
                 onClick={isListening ? stopListening : startListening}
@@ -390,6 +509,8 @@ const VoiceOnboarding: React.FC = () => {
       <p className="text-sm text-muted-foreground mt-6">
         {isListening 
           ? "Click the microphone again to stop recording when you're finished speaking"
+          : aiService.getRemainingTime() < 60
+          ? "Time is running out! Please finish your profile quickly."
           : "Click the microphone to start speaking or type your response"}
       </p>
     </div>
