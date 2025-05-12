@@ -1,9 +1,9 @@
-
 import configService from './configService';
+import OpenRouter from 'openrouter';
 
-// AI Connector Service for connecting to external AI APIs
 class AiConnectorService {
   private isReady = false;
+  private openRouter: OpenRouter | null = null;
   
   constructor() {
     this.checkConfiguration();
@@ -11,85 +11,38 @@ class AiConnectorService {
   
   private checkConfiguration(): void {
     this.isReady = configService.isConfigured();
+    if (this.isReady) {
+      this.openRouter = new OpenRouter({
+        apiKey: configService.getApiKey(),
+        baseURL: 'https://openrouter.ai/api/v1'
+      });
+    }
   }
   
-  // Process text with the AI service
   public async processText(prompt: string, context?: string): Promise<string> {
     this.checkConfiguration();
     
-    if (!this.isReady) {
+    if (!this.isReady || !this.openRouter) {
       console.warn("AI service not configured. Please add API key.");
       return "AI service not configured. Please add an API key in the admin panel.";
     }
     
-    const apiKey = configService.getApiKey();
-    const model = configService.getAiModel();
-    
     try {
-      // This is a simplified example - in production, use a secure backend endpoint
-      // to make this API call rather than exposing the API key in frontend code
-      
-      // For OpenAI
-      if (model.includes('gpt')) {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
+      const response = await this.openRouter.chat.completions.create({
+        model: configService.getAiModel(),
+        messages: [
+          { 
+            role: 'system', 
+            content: 'You are a friendly assistant helping onboard teenagers to a social app called Sparks Fly. Keep responses conversational, age-appropriate, and helpful.' 
           },
-          body: JSON.stringify({
-            model: model,
-            messages: [
-              { role: 'system', content: 'You are a friendly assistant helping onboard teenagers to a social app called Sparks Fly. Keep responses conversational, age-appropriate, and helpful.' },
-              ...(context ? [{ role: 'system', content: `Context: ${context}` }] : []),
-              { role: 'user', content: prompt }
-            ],
-            temperature: 0.7,
-            max_tokens: 150
-          })
-        });
-        
-        const data = await response.json();
-        
-        if (data.error) {
-          console.error("AI API error:", data.error);
-          return "Sorry, there was an error processing your request.";
-        }
-        
-        return data.choices[0].message.content;
-      }
+          ...(context ? [{ role: 'system', content: `Context: ${context}` }] : []),
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 150
+      });
       
-      // For Claude
-      if (model.includes('claude')) {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: model,
-            system: 'You are a friendly assistant helping onboard teenagers to a social app called Sparks Fly. Keep responses conversational, age-appropriate, and helpful.',
-            messages: [
-              { role: 'user', content: `${context ? 'Context: ' + context + '\n\n' : ''}${prompt}` }
-            ],
-            max_tokens: 150
-          })
-        });
-        
-        const data = await response.json();
-        
-        if (data.error) {
-          console.error("AI API error:", data.error);
-          return "Sorry, there was an error processing your request.";
-        }
-        
-        return data.content[0].text;
-      }
-      
-      // Default fallback
-      return "This AI model is not yet supported. Please select a different model.";
+      return response.choices[0].message.content || "I couldn't generate a response. Please try again.";
       
     } catch (error) {
       console.error("Error calling AI API:", error);
@@ -97,15 +50,25 @@ class AiConnectorService {
     }
   }
   
-  // Process audio with the AI service - this would connect to a speech-to-text API
-  // In a real implementation, this would stream audio to an API endpoint
   public async processAudio(audioBlob: Blob): Promise<string> {
-    // This is a placeholder - in a real implementation you would:
-    // 1. Upload the audio to an API endpoint
-    // 2. Process with Whisper API or similar
-    // 3. Return the transcription
-    
-    return "Audio processing requires backend integration.";
+    // This would integrate with a speech-to-text service
+    // For now, we'll use the Web Speech API
+    return new Promise((resolve, reject) => {
+      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+      recognition.lang = 'en-US';
+      recognition.interimResults = false;
+      
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        resolve(transcript);
+      };
+      
+      recognition.onerror = (event) => {
+        reject(event.error);
+      };
+      
+      recognition.start();
+    });
   }
 }
 
