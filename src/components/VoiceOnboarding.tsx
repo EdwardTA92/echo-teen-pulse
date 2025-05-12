@@ -49,7 +49,7 @@ const VoiceOnboarding: React.FC = () => {
       toast({
         title: "API not configured",
         description: "For full AI capabilities, an administrator should configure the API key.",
-        variant: "warning",
+        variant: "default", // Changed from "warning" to "default"
         duration: 6000,
       });
     }
@@ -69,7 +69,7 @@ const VoiceOnboarding: React.FC = () => {
         toast({
           title: "Time's up!",
           description: "Let's finish setting up your profile with what we know so far.",
-          variant: "warning",
+          variant: "default", // Changed from "warning" to "default"
         });
         
         // Ensure we have at least some information before completing
@@ -290,18 +290,19 @@ const VoiceOnboarding: React.FC = () => {
 
   // Update our collected information based on the response
   const updateCollectedInfo = (question: OnboardingQuestion | null, response: string) => {
-    // If no specific question, try to extract from open conversation
+    // If no specific question, we'll have to manually extract information
     if (!question) {
-      const info = aiService.extractProfileInfo(response);
+      // Use simple extraction logic instead of calling the private method
+      const extractedInfo = extractProfileInfo(response);
       
-      if (info.name) {
-        setCollectingInfo(prev => ({ ...prev, name: info.name }));
+      if (extractedInfo.name) {
+        setCollectingInfo(prev => ({ ...prev, name: extractedInfo.name }));
       }
-      if (info.age) {
-        setCollectingInfo(prev => ({ ...prev, age: info.age }));
+      if (extractedInfo.age) {
+        setCollectingInfo(prev => ({ ...prev, age: extractedInfo.age }));
       }
-      if (info.location) {
-        setCollectingInfo(prev => ({ ...prev, location: info.location }));
+      if (extractedInfo.location) {
+        setCollectingInfo(prev => ({ ...prev, location: extractedInfo.location }));
       }
       return;
     }
@@ -332,6 +333,37 @@ const VoiceOnboarding: React.FC = () => {
         }));
       }
     }
+  };
+
+  // Simple profile info extraction function since we can't access the private method in aiService
+  const extractProfileInfo = (text: string): { name?: string; age?: number; location?: string } => {
+    const result: { name?: string; age?: number; location?: string } = {};
+    
+    const lowercaseText = text.toLowerCase();
+    
+    // Try to extract name (if text contains "my name is" or similar)
+    const nameMatch = lowercaseText.match(/(my name is|i am|i'm|call me) (\w+)/i);
+    if (nameMatch && nameMatch[2]) {
+      result.name = nameMatch[2].charAt(0).toUpperCase() + nameMatch[2].slice(1);
+    }
+    
+    // Try to extract age (any mention of age or years old)
+    const ageMatch = lowercaseText.match(/(i am|i'm|my age is) (\d+)( years old)?/i) || 
+                    text.match(/(\d+)( years old)/i);
+    if (ageMatch && ageMatch[2]) {
+      const age = parseInt(ageMatch[2]);
+      if (age > 0 && age < 18) {  // Limit for the app's target audience
+        result.age = age;
+      }
+    }
+    
+    // Try to extract location (if text contains "i live in" or similar)
+    const locationMatch = lowercaseText.match(/(i live in|i'm from|i am from|from) (\w+)/i);
+    if (locationMatch && locationMatch[2]) {
+      result.location = locationMatch[2].charAt(0).toUpperCase() + locationMatch[2].slice(1);
+    }
+    
+    return result;
   };
 
   // Handle text input submission
@@ -389,7 +421,7 @@ const VoiceOnboarding: React.FC = () => {
           <span className="text-sm font-medium">{Math.floor((configService.getTimeLimit() - aiService.getRemainingTime()) / 60)}:{(aiService.getRemainingTime() % 60).toString().padStart(2, '0')}</span>
         </div>
         <Progress value={progress} className="h-2 mb-2" />
-        <Progress value={conversationTimeProgress} className="h-1 bg-red-100" indicatorClassName="bg-red-500" />
+        <Progress value={conversationTimeProgress} className="h-1 bg-red-100" />
       </div>
 
       <Card className="w-full max-w-3xl p-6 shadow-lg animate-fade-in">

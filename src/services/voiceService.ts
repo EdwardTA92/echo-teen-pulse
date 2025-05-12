@@ -2,7 +2,7 @@
 // Voice service using Web Speech API with continuous conversation support
 
 class VoiceService {
-  private recognition: SpeechRecognition | null = null;
+  private recognition: any = null;
   private synthesis: SpeechSynthesis | null = null;
   private isInitialized = false;
   private isRecording = false;
@@ -132,7 +132,7 @@ class VoiceService {
 
     this.isRecording = true;
 
-    this.recognition.onresult = (event) => {
+    this.recognition.onresult = (event: any) => {
       // Reset silence timer on new speech
       if (this.silenceTimer) {
         clearTimeout(this.silenceTimer);
@@ -140,7 +140,7 @@ class VoiceService {
       }
 
       const transcript = Array.from(event.results)
-        .map((result) => result[0].transcript)
+        .map((result: any) => result[0].transcript)
         .join("");
       const isFinal = event.results[0].isFinal;
       onResult(transcript, isFinal);
@@ -153,7 +153,7 @@ class VoiceService {
       }
     };
 
-    this.recognition.onerror = (event) => {
+    this.recognition.onerror = (event: any) => {
       console.error("Speech recognition error:", event);
       onError(event);
       this.isRecording = false;
@@ -206,6 +206,45 @@ class VoiceService {
   
   public isCurrentlyListening(): boolean {
     return this.isRecording;
+  }
+
+  private loadVoices(): void {
+    if (this.synthesis) {
+      this.voices = this.synthesis.getVoices();
+      // Try to find a female voice for English
+      this.selectedVoice = this.voices.find(
+        (voice) => voice.lang.includes("en-") && voice.name.includes("Female")
+      ) || this.voices.find((voice) => voice.lang.includes("en-")) || null;
+      
+      console.log("Loaded voices:", this.voices.length);
+      console.log("Selected voice:", this.selectedVoice?.name);
+    }
+  }
+
+  public setLanguage(language: string): void {
+    this.language = language;
+    if (this.recognition) {
+      this.recognition.lang = language;
+    }
+
+    // Update selected voice based on language
+    if (language === "fr-FR") {
+      this.selectedVoice = this.voices.find(
+        (voice) => voice.lang.includes("fr-") && voice.name.includes("Female")
+      ) || this.voices.find((voice) => voice.lang.includes("fr-")) || this.selectedVoice;
+    } else {
+      this.selectedVoice = this.voices.find(
+        (voice) => voice.lang.includes("en-") && voice.name.includes("Female")
+      ) || this.voices.find((voice) => voice.lang.includes("en-")) || this.selectedVoice;
+    }
+  }
+
+  // Enable or disable continuous conversation mode
+  public setContinuousMode(enable: boolean): void {
+    this.continuousMode = enable;
+    if (this.recognition) {
+      this.recognition.continuous = enable;
+    }
   }
 }
 
